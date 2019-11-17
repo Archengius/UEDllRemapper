@@ -1,4 +1,4 @@
-== UEDllRemapper
+==UEDllRemapper
 
 This tool allow you to remap imports of module build with UE4 Modular LinkType to monolith executable,
 allowing it to function in a monolith build and reference game functions successfully.
@@ -11,8 +11,8 @@ Usage:
 
 Example:
 ```UEDllRemapper.exe ${GAME_PATH}\FactoryGame-Win64-Shipping.exe ${GAME_PATH}\Mods FactoryGame```
-`UEDllRemapper.exe ${GAME_PATH}\FactoryGame-Win64-Shipping.exe` specifies game executable for symbol resolving and exports patching
-`${GAME_PATH}\Mods` will be scanned for game modules, which will be remapped to use game executable
-`FactoryGame` specifies name of the primary game module
+* `UEDllRemapper.exe ${GAME_PATH}\FactoryGame-Win64-Shipping.exe` specifies game executable for symbol resolving and exports patching
+* `${GAME_PATH}\Mods` will be scanned for game modules, which will be remapped to use game executable
+* `FactoryGame` specifies name of the primary game module
 
 **Warning! This DOES NOT provide any method of hooking into the game, it just remaps module imports**
