@@ -93,7 +93,7 @@ std::string createFunctionName(SymbolInfo& symbolInfo, CTypeInfoText& infoText) 
     return resultString;
 }
 
-ULONG64 findSymbolLocation(HANDLE hProcess, ULONG64 dllBase, CTypeInfoText& infoText, std::string& functionSignature) {
+ULONG64 findSymbolLocation(HANDLE hProcess, DWORD64 dllBase, CTypeInfoText& infoText, std::string& functionSignature) {
     if (functionSignature.find("::StaticConfigName") != std::string::npos) {
         //let's hope it will never get called
         //no idea why it is there actually
@@ -200,7 +200,7 @@ int writeFunctionData(std::string& strFilename, ULONG64 offset, const char* payl
     return PeLib::ERROR_NONE;
 }
 
-bool processModule(std::string& gameExecutableName,
+bool processModule(std::string& gameExecutableName, std::string gameModuleName,
         HANDLE hProcess, DWORD64 dllBase, CTypeInfoText& infoText,
         PeLib::ImportDirectory64& impDir, PeLib::dword stringAddr,
         std::unordered_map<std::string, ULONG64>& exportTable,
@@ -211,7 +211,7 @@ bool processModule(std::string& gameExecutableName,
         auto fileName = impDir.getFileName(i, PeLib::OLDDIR);
         for (uint32_t j = 0; j < impDir.getNumberOfFunctions(i, PeLib::OLDDIR); j++) {
             auto functionName = impDir.getFunctionName(i, j, PeLib::OLDDIR);
-            if (fileName.find("UE4") == 0 || fileName == gameExecutableName) {
+            if (fileName.find("UE4") == 0 || fileName.find(gameModuleName) != -1 || fileName == gameExecutableName) {
                 //add export entry to executable export table if it doesn't exist already
                 if (exportTable.find(functionName) != exportTable.end()) continue;
                 ULONG64 resultAddress = findSymbolLocationDecorated(hProcess, dllBase, infoText, functionName);
@@ -231,7 +231,7 @@ bool processModule(std::string& gameExecutableName,
     return patchedFileImportTable;
 }
 
-bool patchModule(std::string& targetModule, std::string& gameExecutableName, HANDLE hProcess, DWORD64 dllBase, CTypeInfoText& infoText, std::unordered_map<std::string, ULONG64>& exportTable) {
+bool patchModule(std::string& targetModule, std::string& gameExecutableName, std::string& gameModuleName, HANDLE hProcess, DWORD64 dllBase, CTypeInfoText& infoText, std::unordered_map<std::string, ULONG64>& exportTable) {
     unsigned int fileType = PeLib::getFileType(targetModule);
     if (fileType == PeLib::PEFILE_UNKNOWN) {
         std::cerr << "Cannot patch module " << targetModule << ": Invalid PE file." << std::endl;
@@ -252,7 +252,7 @@ bool patchModule(std::string& targetModule, std::string& gameExecutableName, HAN
     auto lastSecnr = static_cast<PeLib::word>(file->peHeader().calcNumberOfSections() - 1);
     auto importStrSize = static_cast<unsigned int>(gameExecutableName.size()) + 1;
     auto stringAddr = file->peHeader().getVirtualAddress(lastSecnr) + file->peHeader().getVirtualSize(lastSecnr);
-    bool patchedFileImportTable = processModule(gameExecutableName, hProcess, dllBase, infoText, impDir, stringAddr, exportTable, unresolvedEntries);
+    bool patchedFileImportTable = processModule(gameExecutableName, gameModuleName, hProcess, dllBase, infoText, impDir, stringAddr, exportTable, unresolvedEntries);
 
     if (!unresolvedEntries.empty()) {
         std::cerr << "Cannot patch module " << targetModule << ". Missing symbols:" << std::endl;
@@ -301,6 +301,7 @@ bool processGameExecutable(std::string& gameExecutable, std::unordered_map<std::
         file->peHeader().getSectionName(sectionIndex) != ".exports") {
         sectionIndex++;
         file->peHeader().addSection(".exports", exportDir.size());
+        file->peHeader().setCharacteristics(sectionIndex, PeLib::PELIB_IMAGE_SCN_MEM_READ | PeLib::PELIB_IMAGE_SCN_CNT_INITIALIZED_DATA);
         file->peHeader().makeValid(file->mzHeader().getAddressOfPeHeader());
         exportRVA = file->peHeader().getVirtualAddress(sectionIndex);
         file->peHeader().setIddExportRva(exportRVA);
@@ -322,6 +323,9 @@ bool processGameExecutable(std::string& gameExecutable, std::unordered_map<std::
             PeLib::dword index = exportDir.getNumberOfFunctions();
             exportDir.addFunction(pair.first, static_cast<PeLib::dword>(pair.second));
             exportDir.setFunctionOrdinal(index, static_cast<PeLib::word>(exportDir.getBase() + index));
+            //std::cout << "Adding function entry index " << index << " ordinal " << static_cast<PeLib::word>(exportDir.getBase() + index) << " at " << pair.second << std::endl;
+            exportDir.setNumberOfNames(exportDir.getNumberOfNames() + 1);
+            exportDir.setNumberOfFunctions(exportDir.getNumberOfFunctions() + 1);
             changedFile = true;
         }
     }
@@ -337,6 +341,7 @@ bool processGameExecutable(std::string& gameExecutable, std::unordered_map<std::
         file->peHeader().enlargeLastSection(exportDir.size() - sectionSize);
         std::cout << "Expanding exports section: old size was " << sectionSize << ", required one is " << exportDir.size() << std::endl;
         changedFile = true;
+        shouldWriteSections = true;
     }
 
     if (changedFile) {
@@ -349,18 +354,25 @@ bool processGameExecutable(std::string& gameExecutable, std::unordered_map<std::
     return true;
 }
 
-int main() {
-    std::string gameExecutable(R"(D:\SatisfactoryEarlyAccess\FactoryGame\Binaries\Win64\FactoryGame-Win64-Shipping.exe)");
-    std::string moduleListFolder(R"(D:\SatisfactoryEarlyAccess\FactoryGame\Binaries\Win64\Mods)");
+int main(int argc, char** argv) {
+    if (argc != 4) {
+        std::cout << "Usage: " << argv[0] << " <game_executable> <modules_dir> <game_module_name>" << std::endl;
+        return 0;
+    }
+    std::string gameExecutable(argv[1]);
+    std::string moduleListFolder(argv[2]);
     std::string gameExecutableName = gameExecutable.substr(gameExecutable.find_last_of('\\') + 1);
+    std::string gameModuleName(argv[3]);
 
     HANDLE hProcess = GetCurrentProcess();
     if (SymInitialize(hProcess, nullptr, FALSE) == FALSE) {
+        std::cerr << "Failed to initialize symbols" << std::endl;
         return 1;
     }
     DWORD64 baseOfDll = SymLoadModuleEx(hProcess, nullptr, gameExecutable.c_str(), nullptr, 0, 0, nullptr, 0);
     if (baseOfDll == 0) {
         SymCleanup(hProcess);
+        std::cerr << "Failed to load game executable module. Is path " << gameExecutable << " correct?" << std::endl;
         return 1;
     }
     CTypeInfoDump typeInfoDump(hProcess, baseOfDll);
@@ -378,7 +390,7 @@ int main() {
                 modulePath.append("\\");
                 modulePath.append(moduleName);
                 std::cout << "Attempting to scan module " << modulePath << std::endl;
-                patchModule(modulePath, gameExecutableName, hProcess, baseOfDll, infoText, exportTable);
+                patchModule(modulePath, gameExecutableName, gameModuleName, hProcess, baseOfDll, infoText, exportTable);
             }
         }
         closedir (dir);
